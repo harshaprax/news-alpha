@@ -61,11 +61,11 @@ def main():
             sector_df = sector_df[sector_df["sector"] != "Benchmark"]
         
         if not sector_df.empty:
-            # Show all sectors, but filter out those with NaN Sharpe ratios
+            # Fill NaNs with 0 (shouldn't have any, but handle gracefully)
             if 'sharpe' in sector_df.columns:
-                sector_df = sector_df.dropna(subset=['sharpe'])
+                sector_df['sharpe'] = sector_df['sharpe'].fillna(0.0)
             elif 'sharpe_ratio' in sector_df.columns:
-                sector_df = sector_df.dropna(subset=['sharpe_ratio'])
+                sector_df['sharpe_ratio'] = sector_df['sharpe_ratio'].fillna(0.0)
             
             if not sector_df.empty:
                 plt.figure(figsize=(14, 8))
