@@ -9,6 +9,14 @@ from pathlib import Path
 from nltk.sentiment import SentimentIntensityAnalyzer
 import nltk
 
+# Toggle for sector-balanced sampling of headlines
+BALANCE_SECTORS = True          # Set to True for balanced dataset
+BALANCE_TARGET_PER_SECTOR = 1000 # Max headlines sampled per sector when balancing
+BALANCE_RANDOM_SEED = 42
+
+DATA_DIR = Path("data/clean")
+RAW_DIR = Path("data/raw")
+
 def main():
     # Download VADER lexicon if not already downloaded
     try:
@@ -21,9 +29,9 @@ def main():
     sia = SentimentIntensityAnalyzer()
     
     # Load data
-    prices_path = Path("data/raw/prices/prices.parquet")
-    headlines_path = Path("data/raw/headlines/headlines.parquet")
-    alias_path = Path("data/clean/alias_map.parquet")
+    prices_path = RAW_DIR / "prices/prices.parquet"
+    headlines_path = RAW_DIR / "headlines/headlines.parquet"
+    alias_path = DATA_DIR / "alias_map.parquet"
     
     prices_df = pd.read_parquet(prices_path)
     headlines_df = pd.read_parquet(headlines_path)
@@ -37,7 +45,7 @@ def main():
         print("No headlines found, creating empty features...")
         # Create empty features DataFrame
         features_df = pd.DataFrame(columns=['date', 'ticker', 'headline_cnt', 'sent_mean', 'sent_max'])
-        output_path = Path("data/clean/features_headlines.parquet")
+        output_path = DATA_DIR / "features_headlines.parquet"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         features_df.to_parquet(output_path, index=False)
         print(f"Saved empty features to: {output_path}")
@@ -109,18 +117,49 @@ def main():
     if not ticker_matches:
         print("No ticker matches found, creating empty features...")
         features_df = pd.DataFrame(columns=['date', 'ticker', 'headline_cnt', 'sent_mean', 'sent_max'])
-        output_path = Path("data/clean/features_headlines.parquet")
+        output_path = DATA_DIR / "features_headlines.parquet"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         features_df.to_parquet(output_path, index=False)
         print(f"Saved empty features to: {output_path}")
         return
     
     matches_df = pd.DataFrame(ticker_matches)
+    
+    if BALANCE_SECTORS:
+        # Optional balanced mode: equalize headline counts per sector via random sampling
+        universe_path = DATA_DIR / "universe.csv"
+        if universe_path.exists():
+            universe_df = pd.read_csv(universe_path)[["ticker", "sector"]]
+            matches_df = matches_df.merge(universe_df, on="ticker", how="left")
+            matches_df = matches_df.dropna(subset=["sector"])
+            if not matches_df.empty:
+                print(f"Balancing headlines across sectors (target {BALANCE_TARGET_PER_SECTOR} per sector).")
+                def _sample_sector(group: pd.DataFrame) -> pd.DataFrame:
+                    take = min(len(group), BALANCE_TARGET_PER_SECTOR)
+                    if len(group) <= take:
+                        return group
+                    return group.sample(n=take, random_state=BALANCE_RANDOM_SEED)
+                matches_df = (matches_df.groupby("sector", group_keys=False)
+                                         .apply(_sample_sector)
+                                         .reset_index(drop=True))
+            matches_df = matches_df.drop(columns=["sector"], errors="ignore")
+        else:
+            print(f"Balanced mode requested but missing universe file: {universe_path}. Proceeding unbalanced.")
+    
+    if matches_df.empty:
+        print("No ticker matches available after processing, creating empty features...")
+        features_df = pd.DataFrame(columns=['date', 'ticker', 'headline_cnt', 'sent_mean', 'sent_max'])
+        output_path = DATA_DIR / "features_headlines.parquet"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        features_df.to_parquet(output_path, index=False)
+        print(f"Saved empty features to: {output_path}")
+        return
+    
     print(f"Ticker matches: {len(matches_df)}")
     
     # Calculate match hit-rate
     total_headlines = len(headlines_df)
-    unique_matched_dates = len(set([row['date'] for row in ticker_matches]))
+    unique_matched_dates = matches_df["date"].nunique()
     hit_rate = unique_matched_dates / total_headlines if total_headlines > 0 else 0
     print(f"Match hit-rate: {hit_rate:.1%} ({unique_matched_dates} headlines matched out of {total_headlines})")
     
@@ -142,7 +181,7 @@ def main():
     features_df['date'] = pd.to_datetime(features_df['date'])
     
     # Save to parquet
-    output_path = Path("data/clean/features_headlines.parquet")
+    output_path = DATA_DIR / "features_headlines.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     features_df.to_parquet(output_path, index=False)
     
